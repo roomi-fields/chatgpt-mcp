@@ -1,0 +1,89 @@
+# ChatGPT MCP - DALL-E Image Generation Server
+
+## Overview
+MCP server for automated DALL-E image generation via ChatGPT web interface using Playwright browser automation.
+
+## Context
+Part of the Re-LiANCE Content Factory editorial pipeline. The image generation step is currently manual via ChatGPT Plus. This MCP automates it using Playwright to interact with ChatGPT web interface.
+
+## Architecture
+
+```
+chatgpt-mcp/
+├── src/
+│   ├── index.ts           # HTTP server (Express)
+│   ├── config.ts          # Configuration management
+│   ├── browser.ts         # Singleton Playwright + ChatGPT session
+│   └── tools/
+│       └── generate-image.ts
+├── package.json
+├── tsconfig.json
+└── README.md
+```
+
+## Technical Requirements
+
+### 1. Configuration Module (config.ts)
+- Use env-paths for cross-platform data directory
+- Support environment variables and config file
+- Settings: port, host, headless mode, timeouts
+- Paths: dataDir, userDataDir (Chrome profile), storageStatePath
+- Logging utilities
+
+### 2. Browser Singleton (browser.ts)
+- Singleton pattern for Playwright browser instance
+- Persistent Chrome profile for session persistence
+- Methods:
+  - initialize(): Launch browser with persistent context
+  - ensureLoggedIn(): Check if logged into ChatGPT
+  - openLoginPage(): Open browser for manual login (non-headless)
+  - getPage(): Get current page or create new one
+  - close(): Cleanup browser resources
+- Session state saved to userDataDir
+- Support both headless and visible modes
+
+### 3. Image Generation Tool (generate-image.ts)
+- Input: prompt (string), outputPath (string), size (optional)
+- Sizes: "1024x1024" | "1792x1024" | "1024x1792"
+- Workflow:
+  1. Navigate to new ChatGPT conversation
+  2. Send prompt with DALL-E instruction prefix
+  3. Wait for image generation (up to 2 minutes)
+  4. Extract image URL from response
+  5. Download and save to outputPath
+- Return: { success, imagePath, error? }
+- Handle rate limits and generation failures
+
+### 4. HTTP Server (index.ts)
+- Express server with CORS
+- Endpoints:
+  - GET /health → { status, loggedIn, browserReady }
+  - POST /generate-image → Generate and download image
+  - GET /login → Open browser for manual login
+- Graceful shutdown handling
+- Request logging
+
+### 5. NPM Scripts
+- build: TypeScript compilation
+- start:http: Run the HTTP server
+- dev: Watch mode for development
+- login: Shortcut for manual login
+
+## Constraints
+- No automatic login - manual login once, then session persisted
+- 2 minute timeout for DALL-E generation
+- Handle ChatGPT rate limits gracefully
+- Headless mode configurable (visible for debug)
+
+## Out of Scope
+- Text chat with ChatGPT
+- Multi-model support
+- File uploads
+- Conversation history
+
+## Deliverables
+1. Functional MCP in /mnt/d/Claude/chatgpt-mcp/
+2. npm run start:http to launch server
+3. Manual login support
+4. Working generate_image tool
+5. README with usage instructions

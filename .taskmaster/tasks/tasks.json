@@ -1,0 +1,157 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": "1",
+        "title": "Installation des dépendances et vérification du projet",
+        "description": "Installer les dépendances npm et vérifier que la configuration TypeScript compile correctement.",
+        "details": "Le fichier package.json est déjà configuré avec toutes les dépendances nécessaires (express, cors, playwright, env-paths, dotenv). Cette tâche consiste à:\n\n1. Exécuter `npm install` pour installer les dépendances\n2. Exécuter `npx playwright install chromium` pour installer le navigateur Chromium\n3. Vérifier que la compilation TypeScript fonctionne avec `npm run build`\n4. Créer un fichier .env basé sur .env.example si nécessaire\n\nPseudo-code:\n```bash\ncd /mnt/d/Claude/chatgpt-mcp\nnpm install\nnpx playwright install chromium\nnpm run build\n```",
+        "testStrategy": "Vérifier que:\n- `npm install` se termine sans erreur\n- `npx playwright install chromium` installe le navigateur\n- `npm run build` compile le fichier config.ts existant sans erreur\n- Le dossier dist/ est créé avec config.js",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [],
+        "updatedAt": "2026-01-17T09:54:27.850Z"
+      },
+      {
+        "id": "2",
+        "title": "Créer le singleton du navigateur Playwright (browser.ts)",
+        "description": "Implémenter le module browser.ts avec le pattern singleton pour gérer une instance unique du navigateur Playwright avec persistance de session ChatGPT.",
+        "details": "Créer src/browser.ts avec les fonctionnalités suivantes:\n\n```typescript\nimport { chromium, Browser, BrowserContext, Page } from 'playwright';\nimport { CONFIG, log, logError } from './config.js';\nimport fs from 'fs';\n\nclass BrowserSingleton {\n  private static instance: BrowserSingleton;\n  private browser: Browser | null = null;\n  private context: BrowserContext | null = null;\n  private page: Page | null = null;\n\n  private constructor() {}\n\n  static getInstance(): BrowserSingleton {\n    if (!BrowserSingleton.instance) {\n      BrowserSingleton.instance = new BrowserSingleton();\n    }\n    return BrowserSingleton.instance;\n  }\n\n  async initialize(forceHeadless?: boolean): Promise<void> {\n    // Lancer chromium avec contexte persistant\n    // Utiliser CONFIG.userDataDir pour le profil Chrome\n    // Configurer headless selon CONFIG.headless ou forceHeadless\n  }\n\n  async ensureLoggedIn(): Promise<boolean> {\n    // Naviguer vers chatgpt.com\n    // Vérifier si l'élément de textarea est présent (connecté)\n    // Retourner true/false selon l'état de connexion\n  }\n\n  async openLoginPage(): Promise<void> {\n    // Forcer mode visible (non-headless)\n    // Naviguer vers la page de login ChatGPT\n    // Attendre que l'utilisateur se connecte manuellement\n  }\n\n  async getPage(): Promise<Page> {\n    // Retourner la page existante ou en créer une nouvelle\n  }\n\n  async close(): Promise<void> {\n    // Fermer proprement browser, context, page\n  }\n}\n\nexport const browserManager = BrowserSingleton.getInstance();\n```\n\nPoints importants:\n- Utiliser launchPersistentContext() pour persister la session\n- Configurer le userAgent pour éviter la détection de bot\n- Gérer les timeouts avec CONFIG.browserTimeout",
+        "testStrategy": "Tester manuellement:\n1. Vérifier que le navigateur se lance correctement en mode visible et headless\n2. Vérifier que le profil Chrome est créé dans userDataDir\n3. Tester ensureLoggedIn() retourne false quand non connecté\n4. Tester openLoginPage() ouvre le navigateur pour login manuel\n5. Vérifier que close() libère toutes les ressources",
+        "priority": "high",
+        "dependencies": [
+          "1"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "updatedAt": "2026-01-17T10:02:17.351Z"
+      },
+      {
+        "id": "3",
+        "title": "Implémenter la détection de connexion ChatGPT",
+        "description": "Ajouter la logique de détection de l'état de connexion à ChatGPT dans browser.ts.",
+        "details": "Améliorer la méthode ensureLoggedIn() pour détecter correctement l'état de connexion:\n\n```typescript\nasync ensureLoggedIn(): Promise<boolean> {\n  const page = await this.getPage();\n  await page.goto(CONFIG.chatgptUrl, { waitUntil: 'networkidle' });\n  \n  // Attendre un peu pour que la page se charge\n  await page.waitForTimeout(2000);\n  \n  // Vérifier les indicateurs de connexion\n  // - Présence du textarea de chat\n  // - Absence de bouton \"Log in\" ou \"Sign up\"\n  const isLoggedIn = await page.evaluate(() => {\n    const textarea = document.querySelector('textarea[data-id=\"root\"]') \n      || document.querySelector('#prompt-textarea');\n    const loginBtn = document.querySelector('button[data-testid=\"login-button\"]')\n      || document.querySelector('a[href*=\"/auth/login\"]');\n    return !!textarea && !loginBtn;\n  });\n  \n  return isLoggedIn;\n}\n```\n\nNote: Les sélecteurs CSS peuvent changer - utiliser des sélecteurs robustes et flexibles.",
+        "testStrategy": "1. Tester avec une session non connectée - doit retourner false\n2. Se connecter manuellement, puis tester - doit retourner true\n3. Vérifier que la fonction ne bloque pas indéfiniment\n4. Tester avec différents états de page (chargement, erreur réseau)",
+        "priority": "high",
+        "dependencies": [
+          "2"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "updatedAt": "2026-01-17T10:48:21.573Z"
+      },
+      {
+        "id": "4",
+        "title": "Créer l'outil de génération d'image (generate-image.ts)",
+        "description": "Implémenter le module generate-image.ts qui interagit avec ChatGPT pour générer des images via DALL-E.",
+        "details": "Créer src/tools/generate-image.ts:\n\n```typescript\nimport { browserManager } from '../browser.js';\nimport { CONFIG, log, logError } from '../config.js';\nimport fs from 'fs';\nimport path from 'path';\nimport https from 'https';\n\nexport type ImageSize = '1024x1024' | '1792x1024' | '1024x1792';\n\nexport interface GenerateImageOptions {\n  prompt: string;\n  outputPath: string;\n  size?: ImageSize;\n}\n\nexport interface GenerateImageResult {\n  success: boolean;\n  imagePath?: string;\n  error?: string;\n}\n\nexport async function generateImage(options: GenerateImageOptions): Promise<GenerateImageResult> {\n  const { prompt, outputPath, size = '1024x1024' } = options;\n  \n  try {\n    const page = await browserManager.getPage();\n    \n    // 1. Naviguer vers une nouvelle conversation\n    await page.goto(`${CONFIG.chatgptUrl}/?model=gpt-4`, { waitUntil: 'networkidle' });\n    \n    // 2. Construire le prompt DALL-E\n    const dallePrompt = `Generate an image: ${prompt}. Size: ${size}`;\n    \n    // 3. Entrer le prompt dans le textarea\n    const textarea = await page.waitForSelector('#prompt-textarea', { timeout: 10000 });\n    await textarea.fill(dallePrompt);\n    \n    // 4. Soumettre le prompt\n    await page.keyboard.press('Enter');\n    \n    // 5. Attendre la génération d'image (jusqu'à 2 minutes)\n    const imageSelector = 'img[alt*=\"DALL\"], img[src*=\"oaidalleapi\"], img.dalle-image';\n    await page.waitForSelector(imageSelector, { timeout: CONFIG.imageGenerationTimeout });\n    \n    // 6. Extraire l'URL de l'image\n    const imageUrl = await page.evaluate((sel) => {\n      const img = document.querySelector(sel) as HTMLImageElement;\n      return img?.src || null;\n    }, imageSelector);\n    \n    if (!imageUrl) {\n      return { success: false, error: 'Image URL not found in response' };\n    }\n    \n    // 7. Télécharger et sauvegarder l'image\n    await downloadImage(imageUrl, outputPath);\n    \n    return { success: true, imagePath: outputPath };\n  } catch (error) {\n    const message = error instanceof Error ? error.message : String(error);\n    logError('Image generation failed:', message);\n    return { success: false, error: message };\n  }\n}\n\nasync function downloadImage(url: string, outputPath: string): Promise<void> {\n  // Créer le dossier parent si nécessaire\n  // Télécharger l'image via https/http\n  // Sauvegarder dans outputPath\n}\n```",
+        "testStrategy": "1. Tester avec un prompt simple et vérifier que l'image est générée\n2. Tester les différentes tailles d'image\n3. Tester la gestion des erreurs (timeout, pas d'image, etc.)\n4. Vérifier que le fichier est correctement sauvegardé\n5. Tester avec des chemins absolus et relatifs",
+        "priority": "high",
+        "dependencies": [
+          "2",
+          "3"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "updatedAt": "2026-01-17T11:14:06.084Z"
+      },
+      {
+        "id": "5",
+        "title": "Implémenter le téléchargement d'image robuste",
+        "description": "Créer une fonction de téléchargement d'image robuste qui gère les redirections et différents formats.",
+        "details": "Améliorer la fonction downloadImage dans generate-image.ts:\n\n```typescript\nimport https from 'https';\nimport http from 'http';\nimport fs from 'fs';\nimport path from 'path';\n\nasync function downloadImage(url: string, outputPath: string): Promise<void> {\n  return new Promise((resolve, reject) => {\n    // Créer le dossier parent\n    const dir = path.dirname(outputPath);\n    if (!fs.existsSync(dir)) {\n      fs.mkdirSync(dir, { recursive: true });\n    }\n    \n    // Déterminer le protocole\n    const client = url.startsWith('https') ? https : http;\n    \n    const request = client.get(url, (response) => {\n      // Gérer les redirections\n      if (response.statusCode === 301 || response.statusCode === 302) {\n        const redirectUrl = response.headers.location;\n        if (redirectUrl) {\n          downloadImage(redirectUrl, outputPath).then(resolve).catch(reject);\n          return;\n        }\n      }\n      \n      if (response.statusCode !== 200) {\n        reject(new Error(`Failed to download: HTTP ${response.statusCode}`));\n        return;\n      }\n      \n      const fileStream = fs.createWriteStream(outputPath);\n      response.pipe(fileStream);\n      \n      fileStream.on('finish', () => {\n        fileStream.close();\n        resolve();\n      });\n      \n      fileStream.on('error', reject);\n    });\n    \n    request.on('error', reject);\n    request.setTimeout(30000, () => {\n      request.destroy();\n      reject(new Error('Download timeout'));\n    });\n  });\n}\n```\n\nGérer aussi les images en base64 si ChatGPT les retourne dans ce format.",
+        "testStrategy": "1. Tester le téléchargement depuis une URL HTTPS\n2. Tester la gestion des redirections\n3. Tester la création automatique des dossiers parents\n4. Tester le timeout de téléchargement\n5. Vérifier l'intégrité du fichier téléchargé",
+        "priority": "medium",
+        "dependencies": [
+          "4"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "updatedAt": "2026-01-17T11:26:09.195Z"
+      },
+      {
+        "id": "6",
+        "title": "Créer le serveur HTTP Express (index.ts)",
+        "description": "Implémenter le point d'entrée principal avec le serveur Express, les endpoints REST et la gestion CORS.",
+        "details": "Créer src/index.ts:\n\n```typescript\nimport express from 'express';\nimport cors from 'cors';\nimport { CONFIG, log, logError } from './config.js';\nimport { browserManager } from './browser.js';\nimport { generateImage } from './tools/generate-image.js';\n\nconst app = express();\napp.use(cors());\napp.use(express.json());\n\n// Logging middleware\napp.use((req, res, next) => {\n  log(`${req.method} ${req.path}`);\n  next();\n});\n\n// GET /health - État du serveur\napp.get('/health', async (req, res) => {\n  try {\n    const loggedIn = await browserManager.ensureLoggedIn().catch(() => false);\n    res.json({\n      status: 'ok',\n      loggedIn,\n      browserReady: true\n    });\n  } catch (error) {\n    res.json({\n      status: 'ok',\n      loggedIn: false,\n      browserReady: false\n    });\n  }\n});\n\n// POST /generate-image - Générer une image\napp.post('/generate-image', async (req, res) => {\n  const { prompt, outputPath, size } = req.body;\n  \n  if (!prompt || !outputPath) {\n    return res.status(400).json({ error: 'prompt and outputPath are required' });\n  }\n  \n  const result = await generateImage({ prompt, outputPath, size });\n  res.json(result);\n});\n\n// GET /login - Ouvrir le navigateur pour login manuel\napp.get('/login', async (req, res) => {\n  try {\n    await browserManager.openLoginPage();\n    res.json({ message: 'Login page opened. Please login manually.' });\n  } catch (error) {\n    res.status(500).json({ error: 'Failed to open login page' });\n  }\n});\n\n// Gestion du shutdown gracieux\nprocess.on('SIGINT', shutdown);\nprocess.on('SIGTERM', shutdown);\n\nasync function shutdown() {\n  log('Shutting down...');\n  await browserManager.close();\n  process.exit(0);\n}\n\n// Démarrage du serveur\nasync function start() {\n  // Vérifier les arguments CLI\n  if (process.argv.includes('--login')) {\n    await browserManager.openLoginPage();\n    return;\n  }\n  \n  await browserManager.initialize();\n  \n  app.listen(CONFIG.port, CONFIG.host, () => {\n    log(`Server running at http://${CONFIG.host}:${CONFIG.port}`);\n  });\n}\n\nstart().catch((error) => {\n  logError('Failed to start server:', error);\n  process.exit(1);\n});\n```",
+        "testStrategy": "1. Tester `npm run start:http` démarre le serveur\n2. Tester GET /health retourne le bon format JSON\n3. Tester POST /generate-image avec un prompt valide\n4. Tester POST /generate-image avec des paramètres manquants (erreur 400)\n5. Tester GET /login ouvre le navigateur\n6. Tester le shutdown gracieux avec Ctrl+C",
+        "priority": "high",
+        "dependencies": [
+          "2",
+          "4"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "updatedAt": "2026-01-17T11:25:21.565Z"
+      },
+      {
+        "id": "7",
+        "title": "Implémenter la gestion des rate limits ChatGPT",
+        "description": "Ajouter la détection et la gestion des rate limits de ChatGPT dans l'outil de génération d'image.",
+        "details": "Améliorer generate-image.ts pour gérer les rate limits:\n\n```typescript\ninterface RateLimitInfo {\n  isLimited: boolean;\n  retryAfter?: number;\n  message?: string;\n}\n\nasync function checkRateLimit(page: Page): Promise<RateLimitInfo> {\n  // Vérifier les messages d'erreur de rate limit dans la page\n  const rateLimitIndicators = [\n    'text=\"You\\'ve reached the limit\"',\n    'text=\"Please wait\"',\n    'text=\"Rate limit\"',\n    '.error-message'\n  ];\n  \n  for (const selector of rateLimitIndicators) {\n    const element = await page.$(selector);\n    if (element) {\n      const text = await element.textContent();\n      return {\n        isLimited: true,\n        message: text || 'Rate limited',\n        retryAfter: 60000 // 1 minute par défaut\n      };\n    }\n  }\n  \n  return { isLimited: false };\n}\n\n// Dans generateImage():\nconst rateLimitCheck = await checkRateLimit(page);\nif (rateLimitCheck.isLimited) {\n  return {\n    success: false,\n    error: `Rate limited: ${rateLimitCheck.message}. Retry after ${rateLimitCheck.retryAfter}ms`\n  };\n}\n```\n\nAjouter également un mécanisme de retry avec backoff exponentiel.",
+        "testStrategy": "1. Simuler un rate limit et vérifier la détection\n2. Tester le message d'erreur retourné\n3. Vérifier que le retry fonctionne correctement\n4. Tester plusieurs générations rapides pour déclencher un vrai rate limit",
+        "priority": "medium",
+        "dependencies": [
+          "4"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "updatedAt": "2026-01-17T11:28:14.745Z"
+      },
+      {
+        "id": "8",
+        "title": "Améliorer la robustesse des sélecteurs CSS ChatGPT",
+        "description": "Créer un module de sélecteurs CSS flexibles pour s'adapter aux changements de l'interface ChatGPT.",
+        "details": "Créer un fichier src/selectors.ts avec des sélecteurs flexibles:\n\n```typescript\nexport const SELECTORS = {\n  // Textarea pour entrer le prompt\n  promptTextarea: [\n    '#prompt-textarea',\n    'textarea[data-id=\"root\"]',\n    'textarea[placeholder*=\"Message\"]',\n    'div[contenteditable=\"true\"]'\n  ],\n  \n  // Bouton d'envoi\n  sendButton: [\n    'button[data-testid=\"send-button\"]',\n    'button[aria-label*=\"Send\"]',\n    'button.send-button'\n  ],\n  \n  // Image générée par DALL-E\n  dalleImage: [\n    'img[alt*=\"DALL\"]',\n    'img[src*=\"oaidalleapi\"]',\n    'img[src*=\"dalle\"]',\n    '.dalle-image img',\n    'img[data-testid=\"image-output\"]'\n  ],\n  \n  // Indicateurs de connexion\n  loggedInIndicator: [\n    '#prompt-textarea',\n    'nav[aria-label*=\"Chat\"]',\n    '.conversation-list'\n  ],\n  \n  // Boutons de login\n  loginButton: [\n    'button[data-testid=\"login-button\"]',\n    'a[href*=\"/auth/login\"]',\n    'button:has-text(\"Log in\")'\n  ]\n};\n\nexport async function findElement(page: Page, selectorList: string[]): Promise<ElementHandle | null> {\n  for (const selector of selectorList) {\n    const element = await page.$(selector).catch(() => null);\n    if (element) return element;\n  }\n  return null;\n}\n\nexport async function waitForAnySelector(page: Page, selectorList: string[], timeout: number): Promise<ElementHandle> {\n  const selectorString = selectorList.join(', ');\n  return page.waitForSelector(selectorString, { timeout });\n}\n```\n\nUtiliser ces sélecteurs dans browser.ts et generate-image.ts.",
+        "testStrategy": "1. Vérifier que chaque liste de sélecteurs trouve au moins un élément valide\n2. Tester findElement avec des sélecteurs valides et invalides\n3. Tester waitForAnySelector avec timeout\n4. Vérifier manuellement sur ChatGPT.com que les sélecteurs fonctionnent",
+        "priority": "medium",
+        "dependencies": [
+          "4"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "updatedAt": "2026-01-17T11:28:40.491Z"
+      },
+      {
+        "id": "9",
+        "title": "Ajouter la gestion d'erreurs complète et logging",
+        "description": "Implémenter une gestion d'erreurs robuste avec logging détaillé pour le débogage.",
+        "details": "Améliorer la gestion d'erreurs dans tous les modules:\n\n1. Créer des types d'erreurs personnalisés:\n```typescript\n// src/errors.ts\nexport class ChatGPTError extends Error {\n  constructor(message: string, public readonly code: string) {\n    super(message);\n    this.name = 'ChatGPTError';\n  }\n}\n\nexport class BrowserError extends ChatGPTError {\n  constructor(message: string) {\n    super(message, 'BROWSER_ERROR');\n  }\n}\n\nexport class AuthenticationError extends ChatGPTError {\n  constructor(message: string) {\n    super(message, 'AUTH_ERROR');\n  }\n}\n\nexport class ImageGenerationError extends ChatGPTError {\n  constructor(message: string) {\n    super(message, 'IMAGE_GEN_ERROR');\n  }\n}\n```\n\n2. Améliorer config.ts avec des niveaux de log:\n```typescript\nexport type LogLevel = 'debug' | 'info' | 'warn' | 'error';\n\nexport function logDebug(message: string, ...args: unknown[]): void {\n  if (process.env.DEBUG) {\n    log(`[DEBUG] ${message}`, ...args);\n  }\n}\n```\n\n3. Ajouter des try-catch appropriés dans tous les handlers Express",
+        "testStrategy": "1. Provoquer différentes erreurs et vérifier les messages\n2. Tester les codes d'erreur HTTP retournés\n3. Vérifier le format des logs\n4. Tester le mode DEBUG=true pour les logs détaillés",
+        "priority": "medium",
+        "dependencies": [
+          "6"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "updatedAt": "2026-01-17T11:34:28.078Z"
+      },
+      {
+        "id": "10",
+        "title": "Créer le README et la documentation",
+        "description": "Rédiger la documentation complète avec instructions d'installation, configuration et utilisation.",
+        "details": "Créer README.md avec:\n\n```markdown\n# ChatGPT MCP - DALL-E Image Generation Server\n\nServeur MCP pour la génération automatisée d'images DALL-E via l'interface web ChatGPT.\n\n## Prérequis\n- Node.js >= 18\n- Compte ChatGPT Plus (accès DALL-E)\n\n## Installation\n```bash\nnpm install\nnpx playwright install chromium\nnpm run build\n```\n\n## Configuration\nVariables d'environnement:\n- `PORT` - Port du serveur (défaut: 3100)\n- `HOST` - Hôte (défaut: 0.0.0.0)\n- `HEADLESS` - Mode headless (défaut: true)\n\n## Utilisation\n\n### Première connexion\n```bash\nnpm run login\n```\nUn navigateur s'ouvre - connectez-vous manuellement à ChatGPT.\n\n### Démarrer le serveur\n```bash\nnpm run start:http\n```\n\n### Endpoints API\n\n#### GET /health\nVérifie l'état du serveur et de la connexion.\n\n#### POST /generate-image\nGénère une image DALL-E.\n```json\n{\n  \"prompt\": \"A cat wearing a hat\",\n  \"outputPath\": \"/path/to/output.png\",\n  \"size\": \"1024x1024\"\n}\n```\n\n#### GET /login\nOuvre le navigateur pour connexion manuelle.\n\n## Dépannage\n- Si la session expire, relancez `npm run login`\n- Utilisez `HEADLESS=false` pour déboguer\n```\n\nInclure aussi des exemples curl et des cas d'utilisation.",
+        "testStrategy": "1. Suivre le README depuis zéro sur une nouvelle machine\n2. Vérifier que tous les exemples curl fonctionnent\n3. Tester les instructions de dépannage\n4. Faire relire par quelqu'un d'autre pour clarté",
+        "priority": "low",
+        "dependencies": [
+          "6",
+          "7",
+          "8"
+        ],
+        "status": "done",
+        "subtasks": [],
+        "updatedAt": "2026-01-17T11:35:26.171Z"
+      }
+    ],
+    "metadata": {
+      "version": "1.0.0",
+      "lastModified": "2026-01-17T11:35:26.177Z",
+      "taskCount": 10,
+      "completedCount": 10,
+      "tags": [
+        "master"
+      ]
+    }
+  }
+}

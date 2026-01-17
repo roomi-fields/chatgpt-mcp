@@ -1,0 +1,39 @@
+{
+  "name": "chatgpt-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for DALL-E image generation via ChatGPT web interface",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "start:http": "node dist/index.js",
+    "dev": "tsc --watch",
+    "login": "node dist/index.js --login"
+  },
+  "keywords": [
+    "mcp",
+    "chatgpt",
+    "dalle",
+    "playwright",
+    "image-generation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "env-paths": "^3.0.0",
+    "express": "^4.21.2",
+    "patchright": "^1.57.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
