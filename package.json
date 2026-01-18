@@ -9,7 +9,8 @@
     "start": "node dist/index.js",
     "start:http": "node dist/index.js",
     "dev": "tsc --watch",
-    "login": "node dist/index.js --login"
+    "login": "node dist/index.js --login",
+    "cleanup": "npx tsx scripts/cleanup-conversations.ts"
   },
   "keywords": [
     "mcp",

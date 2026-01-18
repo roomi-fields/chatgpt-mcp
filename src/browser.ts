@@ -49,11 +49,6 @@ class BrowserSingleton {
 
     this.initialized = true;
     log('Browser initialized successfully');
-
-    // Minimiser la fenêtre si pas en mode login
-    if (!forceVisible) {
-      await this.minimizeWindow();
-    }
   }
 
   async minimizeWindow(): Promise<void> {
@@ -69,6 +64,23 @@ class BrowserSingleton {
       logDebug('Browser window minimized');
     } catch (e) {
       logWarn('Could not minimize window:', e);
+    }
+  }
+
+  async restoreWindow(): Promise<void> {
+    if (!this.page || !this.context) return;
+
+    try {
+      const cdpSession = await this.context.newCDPSession(this.page);
+      const { windowId } = await cdpSession.send('Browser.getWindowForTarget');
+      await cdpSession.send('Browser.setWindowBounds', {
+        windowId,
+        bounds: { windowState: 'normal' }
+      });
+      await this.page.waitForTimeout(500); // Let window restore
+      logDebug('Browser window restored');
+    } catch (e) {
+      logWarn('Could not restore window:', e);
     }
   }
 
