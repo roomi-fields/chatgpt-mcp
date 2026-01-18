@@ -40,7 +40,8 @@ class BrowserSingleton {
       headless,
       channel: 'chrome',  // Use system Chrome instead of bundled Chromium
       timeout: CONFIG.browserTimeout,
-      viewport: { width: 1280, height: 800 },
+      viewport: { width: 1280, height: 600 },
+      colorScheme: 'dark',  // Force dark mode
     });
 
     // Get existing page or create new one

@@ -18,7 +18,8 @@ async function cleanupConversations() {
     headless: false,
     channel: 'chrome',
     args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
-    viewport: { width: 1280, height: 800 },
+    viewport: { width: 1280, height: 600 },
+    colorScheme: 'dark',  // Force dark mode
   });
 
   const page = await browser.newPage();

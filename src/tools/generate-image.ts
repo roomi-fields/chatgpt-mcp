@@ -179,20 +179,30 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
       return { success: false, error: 'Could not find chat textarea' };
     }
 
-    // Capture existing large images BEFORE sending prompt (only in assistant messages)
+    // Capture existing images BEFORE sending prompt
     const existingImages = await page.evaluate(() => {
-      const assistantMsgs = document.querySelectorAll('div[data-message-author-role="assistant"]');
       const urls: string[] = [];
-      assistantMsgs.forEach(msg => {
-        const imgs = msg.querySelectorAll('img');
+      // Check new ChatGPT image UI
+      const imageContainers = document.querySelectorAll('div[id^="image-"], .group\\/imagegen-image');
+      imageContainers.forEach(container => {
+        const imgs = container.querySelectorAll('img');
         imgs.forEach(img => {
-          // Only track large images (DALL-E images are 200+ px, icons are 40-64px)
-          if (img.src && (img.src.includes('estuary') || img.src.includes('oaidalleapi')) && img.width >= 200 && img.height >= 200) {
+          if (img.src && img.src.includes('estuary')) {
             urls.push(img.src);
           }
         });
       });
-      return urls;
+      // Also check assistant messages
+      const assistantMsgs = document.querySelectorAll('div[data-message-author-role="assistant"]');
+      assistantMsgs.forEach(msg => {
+        const imgs = msg.querySelectorAll('img');
+        imgs.forEach(img => {
+          if (img.src && (img.src.includes('estuary') || img.src.includes('oaidalleapi'))) {
+            urls.push(img.src);
+          }
+        });
+      });
+      return [...new Set(urls)]; // Remove duplicates
     });
     logDebug(`Existing images before prompt: ${existingImages.length}`);
 
@@ -235,15 +245,18 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
       'button[aria-label*="télécharger" i]',
     ];
 
-    // Wait for image to appear in the response (only in assistant messages)
+    // Wait for image to appear in the response
     const imageSelectors = [
+      // New ChatGPT image generation UI
+      'div[id^="image-"] img[src*="estuary"]',
+      '.group\\/imagegen-image img[src*="estuary"]',
+      // Fallback to assistant messages
       'div[data-message-author-role="assistant"] img[src*="estuary/content"]',
       'div[data-message-author-role="assistant"] img[src*="oaidalleapi"]',
       'div[data-message-author-role="assistant"] img[src*="dalle"]',
       'div[data-message-author-role="assistant"] img[alt*="Generated"]',
-      'div[data-message-author-role="assistant"] div[data-testid="image-container"] img',
-      'div[data-message-author-role="assistant"] img.rounded-lg',
-      'div[data-message-author-role="assistant"] img[width]',
+      'img[alt="Image générée"]',
+      'img[alt="Generated image"]',
     ];
 
     let imageUrl: string | null = null;
@@ -276,46 +289,75 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
       }
 
       if (downloadButtonFound) {
-        // Find the image URL now that we know it's ready (only large images)
-        const foundUrl = await page.evaluate(({ selectors, existing }: { selectors: string[], existing: string[] }) => {
+        // Find the image URL now that we know it's ready
+        const imageSearchResult = await page.evaluate(({ selectors, existing }: { selectors: string[], existing: string[] }) => {
+          const debug: string[] = [];
           for (const selector of selectors) {
             const imgs = Array.from(document.querySelectorAll(selector));
+            debug.push(`${selector}: ${imgs.length} imgs`);
             for (const img of imgs) {
               const imgEl = img as HTMLImageElement;
               const src = imgEl.src;
-              // Only consider large images (DALL-E images are 200+ px, icons are 40-64px)
-              if (src && (src.includes('estuary') || src.includes('oaidalleapi')) &&
-                  !src.includes('avatar') && imgEl.width >= 200 && imgEl.height >= 200) {
-                if (!existing.includes(src)) {
-                  return src;
-                }
+              const hasEstuary = src?.includes('estuary') || src?.includes('oaidalleapi');
+              // Use naturalWidth/naturalHeight for actual image size, or check opacity for visibility
+              const naturalSize = `${imgEl.naturalWidth}x${imgEl.naturalHeight}`;
+              const displaySize = `${imgEl.width}x${imgEl.height}`;
+              const opacity = getComputedStyle(imgEl).opacity;
+              const isVisible = opacity !== '0' && opacity !== '0.01';
+              const isNew = !existing.includes(src);
+              debug.push(`  - natural=${naturalSize}, display=${displaySize}, opacity=${opacity}, estuary=${hasEstuary}, new=${isNew}`);
+
+              // Accept if it's an estuary image, not an avatar, is new, and either has natural size or is visible
+              if (src && hasEstuary && !src.includes('avatar') && isNew && isVisible) {
+                return { url: src, debug };
               }
             }
           }
-          return null;
+          return { url: null, debug };
         }, { selectors: imageSelectors, existing: existingImages });
 
-        if (foundUrl) {
-          imageUrl = foundUrl;
-          log(`Image URL: ${foundUrl.substring(0, 80)}...`);
+        if (imageSearchResult.debug.length > 0) {
+          logDebug(`Image search: ${imageSearchResult.debug.join(' | ')}`);
+        }
+
+        if (imageSearchResult.url) {
+          imageUrl = imageSearchResult.url;
+          log(`Image URL: ${imageUrl.substring(0, 80)}...`);
+        } else {
+          logWarn('Download button found but no matching image URL - will try fallback');
         }
         break;
       }
 
       // Fallback: track URL changes (for cases with multiple images / no download button)
-      // Only look at large images inside assistant messages to avoid picking up avatars/icons
       const allUrls = await page.evaluate(() => {
-        const assistantMsgs = document.querySelectorAll('div[data-message-author-role="assistant"]');
         const urls: string[] = [];
-        assistantMsgs.forEach(msg => {
-          const imgs = msg.querySelectorAll('img');
+        // Look for images in the new ChatGPT image generation UI
+        const imageContainers = document.querySelectorAll('div[id^="image-"], .group\\/imagegen-image');
+        imageContainers.forEach(container => {
+          const imgs = container.querySelectorAll('img');
           imgs.forEach(img => {
-            // DALL-E images are at least 256px displayed, icons are much smaller (40-64px)
-            if (img.src && img.src.includes('estuary/content') && img.width >= 200 && img.height >= 200) {
-              urls.push(img.src);
+            if (img.src && img.src.includes('estuary')) {
+              const opacity = getComputedStyle(img).opacity;
+              // Only include visible images (opacity > 0.01)
+              if (opacity !== '0' && opacity !== '0.01') {
+                urls.push(img.src);
+              }
             }
           });
         });
+        // Also check assistant messages as fallback
+        if (urls.length === 0) {
+          const assistantMsgs = document.querySelectorAll('div[data-message-author-role="assistant"]');
+          assistantMsgs.forEach(msg => {
+            const imgs = msg.querySelectorAll('img');
+            imgs.forEach(img => {
+              if (img.src && img.src.includes('estuary')) {
+                urls.push(img.src);
+              }
+            });
+          });
+        }
         return urls;
       });
       const newUrls = allUrls.filter(url => !existingImages.includes(url));
@@ -387,28 +429,44 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
     }
 
     if (!imageUrl) {
-      // Try one more approach: get all large images in assistant messages
+      // Try one more approach: get all estuary images from any container
       const allImages = await page.evaluate(() => {
-        const assistantMsgs = document.querySelectorAll('div[data-message-author-role="assistant"]');
         const sources: string[] = [];
-        assistantMsgs.forEach(msg => {
-          const imgs = msg.querySelectorAll('img');
-          imgs.forEach(img => {
-            if (img.src && img.width > 200) {
-              sources.push(img.src);
+        // New ChatGPT image UI
+        document.querySelectorAll('div[id^="image-"] img, .group\\/imagegen-image img').forEach(img => {
+          const imgEl = img as HTMLImageElement;
+          if (imgEl.src && imgEl.src.includes('estuary')) {
+            const opacity = getComputedStyle(imgEl).opacity;
+            if (opacity !== '0' && opacity !== '0.01') {
+              sources.push(imgEl.src);
             }
-          });
+          }
         });
-        return sources;
+        // Assistant messages
+        document.querySelectorAll('div[data-message-author-role="assistant"] img').forEach(img => {
+          const imgEl = img as HTMLImageElement;
+          if (imgEl.src && imgEl.src.includes('estuary')) {
+            sources.push(imgEl.src);
+          }
+        });
+        // Any image with Generated alt text
+        document.querySelectorAll('img[alt*="générée"], img[alt*="Generated"]').forEach(img => {
+          const imgEl = img as HTMLImageElement;
+          if (imgEl.src && imgEl.src.includes('estuary')) {
+            sources.push(imgEl.src);
+          }
+        });
+        return [...new Set(sources)];
       });
 
-      // Find the most likely DALL-E image
+      log(`Final fallback found ${allImages.length} images`);
+
+      // Find a new DALL-E image
       for (const src of allImages) {
-        if (src.includes('dalle') || src.includes('oaidalleapi') || src.includes('estuary')) {
-          if (!existingImages.includes(src)) {
-            imageUrl = src;
-            break;
-          }
+        if (!existingImages.includes(src)) {
+          imageUrl = src;
+          log(`Using fallback image: ${src.substring(0, 80)}...`);
+          break;
         }
       }
     }
