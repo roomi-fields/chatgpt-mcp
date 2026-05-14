@@ -179,30 +179,15 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
       return { success: false, error: 'Could not find chat textarea' };
     }
 
-    // Capture existing images BEFORE sending prompt
+    // Capture every image already on the page BEFORE sending the prompt, so we can
+    // tell which image is NEW afterwards. Host-agnostic on purpose: ChatGPT keeps
+    // changing the host/structure of generated images.
     const existingImages = await page.evaluate(() => {
       const urls: string[] = [];
-      // Check new ChatGPT image UI
-      const imageContainers = document.querySelectorAll('div[id^="image-"], .group\\/imagegen-image');
-      imageContainers.forEach(container => {
-        const imgs = container.querySelectorAll('img');
-        imgs.forEach(img => {
-          if (img.src && img.src.includes('estuary')) {
-            urls.push(img.src);
-          }
-        });
+      document.querySelectorAll('img').forEach(img => {
+        if (img.src && img.src.startsWith('http')) urls.push(img.src);
       });
-      // Also check assistant messages
-      const assistantMsgs = document.querySelectorAll('div[data-message-author-role="assistant"]');
-      assistantMsgs.forEach(msg => {
-        const imgs = msg.querySelectorAll('img');
-        imgs.forEach(img => {
-          if (img.src && (img.src.includes('estuary') || img.src.includes('oaidalleapi'))) {
-            urls.push(img.src);
-          }
-        });
-      });
-      return [...new Set(urls)]; // Remove duplicates
+      return [...new Set(urls)];
     });
     logDebug(`Existing images before prompt: ${existingImages.length}`);
 
@@ -216,7 +201,7 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
 
     // Submit the prompt
     await page.keyboard.press('Enter');
-    log('Prompt submitted. Waiting for image generation (up to 2 minutes)...');
+    log('Prompt submitted. Waiting for image generation...');
 
     // Wait a moment then check for rate limits (just log warning, don't fail - image may still generate)
     await page.waitForTimeout(5000);
@@ -237,167 +222,81 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
       }
     }
 
-    // Download button selector - appears when image is fully generated
-    const downloadButtonSelectors = [
-      'button[aria-label="Télécharger cette image"]',
-      'button[aria-label="Download this image"]',
-      'button[aria-label*="download" i]',
-      'button[aria-label*="télécharger" i]',
-    ];
-
-    // Wait for image to appear in the response
-    const imageSelectors = [
-      // New ChatGPT image generation UI
-      'div[id^="image-"] img[src*="estuary"]',
-      '.group\\/imagegen-image img[src*="estuary"]',
-      // Fallback to assistant messages
-      'div[data-message-author-role="assistant"] img[src*="estuary/content"]',
-      'div[data-message-author-role="assistant"] img[src*="oaidalleapi"]',
-      'div[data-message-author-role="assistant"] img[src*="dalle"]',
-      'div[data-message-author-role="assistant"] img[alt*="Generated"]',
-      'img[alt="Image générée"]',
-      'img[alt="Generated image"]',
-    ];
-
+    // --- Detect a FINISHED generated image ---
+    // We no longer use the "Download / Télécharger" button as the "ready" signal:
+    // ChatGPT now renders that control before the image is actually generated, which
+    // caused false-positive early detection (button found ~5s after submit -> no image
+    // yet -> failure). Instead we wait for a genuinely large image (DALL-E output is
+    // >=1024px; UI icons / avatars / spinners are tiny or have naturalWidth 0) to
+    // appear inside the latest assistant turn and stay STABLE for a few polls.
+    // This is host-agnostic and does not depend on a download button.
     let imageUrl: string | null = null;
-    let imageElement: any = null;
-
-    // Poll for download button (most reliable) or track URLs as fallback
     const startTime = Date.now();
-    let downloadButtonFound = false;
-
-    // For fallback: track URL changes
-    let lastUrlSet = new Set<string>();
+    let lastSeenUrl: string | null = null;
     let stableCount = 0;
-    let newestUrl: string | null = null;
     let lastLogTime = 0;
+    const STABLE_REQUIRED = 3; // 3 consecutive polls (~15s) of the same large image
 
-    log('Waiting for download button or stable image URLs...');
+    log('Waiting for a generated image to appear and stabilize...');
     while (Date.now() - startTime < detectionTimeout) {
-      // Check for download button first - this is the most reliable signal
-      for (const selector of downloadButtonSelectors) {
-        try {
-          const btn = await page.$(selector);
-          if (btn) {
-            log('Download button detected - image is ready!');
-            downloadButtonFound = true;
+      // Pick the largest "new" image, preferring ones inside an assistant message.
+      const found = await page.evaluate(({ existing }: { existing: string[] }) => {
+        const debug: string[] = [];
+        const candidates: { src: string; w: number; h: number; inAssistant: boolean }[] = [];
+
+        const consider = (img: HTMLImageElement, inAssistant: boolean) => {
+          const src = img.src || '';
+          if (!src || !src.startsWith('http')) return;
+          if (src.includes('avatar')) return;
+          if (candidates.some(c => c.src === src)) return;
+          candidates.push({ src, w: img.naturalWidth, h: img.naturalHeight, inAssistant });
+        };
+
+        // Images inside assistant turns (the generated image lives here)
+        Array.from(document.querySelectorAll('div[data-message-author-role="assistant"]')).forEach(
+          msg => msg.querySelectorAll('img').forEach(img => consider(img as HTMLImageElement, true))
+        );
+        // Whole-page fallback in case the role attribute changes one day
+        document.querySelectorAll('img').forEach(img => consider(img as HTMLImageElement, false));
+
+        // A generated image is large; icons / avatars / spinners are small or 0.
+        const big = candidates.filter(c => c.w >= 256 && c.h >= 256 && !existing.includes(c.src));
+        big.sort((a, b) => b.w * b.h - a.w * a.h);
+
+        debug.push(`${candidates.length} imgs, ${big.length} large&new`);
+        big.slice(0, 4).forEach(c =>
+          debug.push(`  ${c.w}x${c.h} assistant=${c.inAssistant} ${c.src.slice(0, 70)}`)
+        );
+
+        // Prefer an image inside an assistant message, else the largest big image.
+        const best = big.find(c => c.inAssistant) || big[0] || null;
+        return { url: best ? best.src : null, debug };
+      }, { existing: existingImages });
+
+      if (found.debug.length) logDebug(`Image scan: ${found.debug.join(' | ')}`);
+
+      if (found.url) {
+        if (found.url === lastSeenUrl) {
+          stableCount++;
+          if (stableCount >= STABLE_REQUIRED) {
+            imageUrl = found.url;
+            log(`Image stable - ready: ${imageUrl.substring(0, 80)}...`);
             break;
           }
-        } catch {
-          // Ignore
-        }
-      }
-
-      if (downloadButtonFound) {
-        // Find the image URL now that we know it's ready
-        const imageSearchResult = await page.evaluate(({ selectors, existing }: { selectors: string[], existing: string[] }) => {
-          const debug: string[] = [];
-          for (const selector of selectors) {
-            const imgs = Array.from(document.querySelectorAll(selector));
-            debug.push(`${selector}: ${imgs.length} imgs`);
-            for (const img of imgs) {
-              const imgEl = img as HTMLImageElement;
-              const src = imgEl.src;
-              const hasEstuary = src?.includes('estuary') || src?.includes('oaidalleapi');
-              // Use naturalWidth/naturalHeight for actual image size, or check opacity for visibility
-              const naturalSize = `${imgEl.naturalWidth}x${imgEl.naturalHeight}`;
-              const displaySize = `${imgEl.width}x${imgEl.height}`;
-              const opacity = getComputedStyle(imgEl).opacity;
-              const isVisible = opacity !== '0' && opacity !== '0.01';
-              const isNew = !existing.includes(src);
-              debug.push(`  - natural=${naturalSize}, display=${displaySize}, opacity=${opacity}, estuary=${hasEstuary}, new=${isNew}`);
-
-              // Accept if it's an estuary image, not an avatar, is new, and either has natural size or is visible
-              if (src && hasEstuary && !src.includes('avatar') && isNew && isVisible) {
-                return { url: src, debug };
-              }
-            }
-          }
-          return { url: null, debug };
-        }, { selectors: imageSelectors, existing: existingImages });
-
-        if (imageSearchResult.debug.length > 0) {
-          logDebug(`Image search: ${imageSearchResult.debug.join(' | ')}`);
-        }
-
-        if (imageSearchResult.url) {
-          imageUrl = imageSearchResult.url;
-          log(`Image URL: ${imageUrl.substring(0, 80)}...`);
         } else {
-          logWarn('Download button found but no matching image URL - will try fallback');
+          lastSeenUrl = found.url;
+          stableCount = 1;
+          logDebug(`New candidate image, stabilizing: ${found.url.substring(0, 70)}...`);
         }
-        break;
-      }
-
-      // Fallback: track URL changes (for cases with multiple images / no download button)
-      const allUrls = await page.evaluate(() => {
-        const urls: string[] = [];
-        // Look for images in the new ChatGPT image generation UI
-        const imageContainers = document.querySelectorAll('div[id^="image-"], .group\\/imagegen-image');
-        imageContainers.forEach(container => {
-          const imgs = container.querySelectorAll('img');
-          imgs.forEach(img => {
-            if (img.src && img.src.includes('estuary')) {
-              const opacity = getComputedStyle(img).opacity;
-              // Only include visible images (opacity > 0.01)
-              if (opacity !== '0' && opacity !== '0.01') {
-                urls.push(img.src);
-              }
-            }
-          });
-        });
-        // Also check assistant messages as fallback
-        if (urls.length === 0) {
-          const assistantMsgs = document.querySelectorAll('div[data-message-author-role="assistant"]');
-          assistantMsgs.forEach(msg => {
-            const imgs = msg.querySelectorAll('img');
-            imgs.forEach(img => {
-              if (img.src && img.src.includes('estuary')) {
-                urls.push(img.src);
-              }
-            });
-          });
-        }
-        return urls;
-      });
-      const newUrls = allUrls.filter(url => !existingImages.includes(url));
-      const currentUrlSet = new Set(newUrls);
-
-      // Check if URLs have changed
-      const setsEqual = (a: Set<string>, b: Set<string>) => {
-        if (a.size !== b.size) return false;
-        for (const item of a) {
-          if (!b.has(item)) return false;
-        }
-        return true;
-      };
-
-      if (!setsEqual(lastUrlSet, currentUrlSet)) {
-        // URLs changed - find newest
-        const addedUrls = [...currentUrlSet].filter(url => !lastUrlSet.has(url));
-        if (addedUrls.length > 0) {
-          newestUrl = addedUrls[addedUrls.length - 1];
-          logDebug(`New URL appeared: ${newestUrl.substring(0, 60)}...`);
-        }
+      } else {
+        lastSeenUrl = null;
         stableCount = 0;
-        lastUrlSet = currentUrlSet;
-      } else if (currentUrlSet.size > 0) {
-        stableCount++;
-        // After 5 minutes of stability without download button, use fallback
-        if (stableCount >= 60) { // 60 * 5s = 300s = 5 minutes
-          log(`No download button but URLs stable for 5 minutes - using fallback`);
-          if (newestUrl) {
-            imageUrl = newestUrl;
-            log(`Using newest URL: ${imageUrl.substring(0, 80)}...`);
-          }
-          break;
-        }
       }
 
-      // Log progress every 30 seconds
+      // Progress log every 30 seconds
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       if (elapsed - lastLogTime >= 30) {
-        log(`Waiting... (${elapsed}s) - ${currentUrlSet.size} URLs, stable: ${stableCount}/60`);
+        log(`Waiting... (${elapsed}s) - candidate: ${lastSeenUrl ? 'yes' : 'none'}, stable: ${stableCount}/${STABLE_REQUIRED}`);
         lastLogTime = elapsed;
       }
 
@@ -422,53 +321,9 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
       await page.waitForTimeout(5000);
     }
 
-    // If download button was found, image is ready - just a short wait
-    if (downloadButtonFound && imageUrl) {
-      log('Download button found - waiting 2s for final render...');
+    // Small settle wait so the server-side file is final before downloading
+    if (imageUrl) {
       await page.waitForTimeout(2000);
-    }
-
-    if (!imageUrl) {
-      // Try one more approach: get all estuary images from any container
-      const allImages = await page.evaluate(() => {
-        const sources: string[] = [];
-        // New ChatGPT image UI
-        document.querySelectorAll('div[id^="image-"] img, .group\\/imagegen-image img').forEach(img => {
-          const imgEl = img as HTMLImageElement;
-          if (imgEl.src && imgEl.src.includes('estuary')) {
-            const opacity = getComputedStyle(imgEl).opacity;
-            if (opacity !== '0' && opacity !== '0.01') {
-              sources.push(imgEl.src);
-            }
-          }
-        });
-        // Assistant messages
-        document.querySelectorAll('div[data-message-author-role="assistant"] img').forEach(img => {
-          const imgEl = img as HTMLImageElement;
-          if (imgEl.src && imgEl.src.includes('estuary')) {
-            sources.push(imgEl.src);
-          }
-        });
-        // Any image with Generated alt text
-        document.querySelectorAll('img[alt*="générée"], img[alt*="Generated"]').forEach(img => {
-          const imgEl = img as HTMLImageElement;
-          if (imgEl.src && imgEl.src.includes('estuary')) {
-            sources.push(imgEl.src);
-          }
-        });
-        return [...new Set(sources)];
-      });
-
-      log(`Final fallback found ${allImages.length} images`);
-
-      // Find a new DALL-E image
-      for (const src of allImages) {
-        if (!existingImages.includes(src)) {
-          imageUrl = src;
-          log(`Using fallback image: ${src.substring(0, 80)}...`);
-          break;
-        }
-      }
     }
 
     if (!imageUrl) {
@@ -553,4 +408,3 @@ export async function generateImage(options: GenerateImageOptions): Promise<Gene
     return { success: false, error: message };
   }
 }
-
